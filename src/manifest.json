@@ -1,0 +1,68 @@
+{
+  "manifest_version": 2,
+  "name": "Gainshift",
+  "version": "2.0.2",
+  "description": "Per-tab volume control with amplification up to 600%. Reaches Web Audio games and nested frames, not just media elements.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tab-volume@pascal.local",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "permissions": [
+    "tabs",
+    "webNavigation",
+    "storage",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "audio-hook.js"
+      ],
+      "world": "MAIN",
+      "all_frames": true,
+      "run_at": "document_start",
+      "match_about_blank": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "match_about_blank": true
+    }
+  ],
+  "browser_action": {
+    "default_title": "Gainshift",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png"
+    }
+  },
+  "icons": {
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "64": "icon-64.png",
+    "96": "icon-96.png",
+    "128": "icon-128.png"
+  }
+}

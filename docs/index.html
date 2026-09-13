@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gainshift — per-tab volume for Firefox</title>
+<meta name="description" content="Per-tab volume control for Firefox, 0–600%. Reaches Web Audio games and nested frames, not just video and audio elements.">
+<link rel="icon" href="img/icon-128.png">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #101318;
+    --muted: #5b6472;
+    --line: #e3e6ea;
+    --accent: #1d4ed8;
+    --card: #f7f8fa;
+    --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --fg: #eef1f5;
+      --muted: #99a2ae;
+      --line: #2b2f36;
+      --accent: #6b9bff;
+      --card: #1c1f24;
+      --warn: #f0a742;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    padding: 0 20px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding-block: 64px 80px; }
+
+  header { text-align: center; margin-bottom: 56px; }
+  header img.mark { width: 88px; height: 88px; border-radius: 20px; }
+  h1 {
+    font-size: clamp(34px, 7vw, 46px);
+    letter-spacing: -0.025em;
+    margin: 18px 0 10px;
+    font-weight: 680;
+  }
+  .tagline { font-size: clamp(17px, 3.4vw, 19px); color: var(--muted); margin: 0 auto 26px; max-width: 30ch; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  .btn {
+    display: inline-block;
+    padding: 11px 20px;
+    border-radius: 9px;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 15px;
+    border: 1px solid var(--line);
+    color: var(--fg);
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary:hover { opacity: 0.9; }
+
+  h2 {
+    font-size: 22px;
+    letter-spacing: -0.015em;
+    margin: 52px 0 14px;
+    font-weight: 650;
+  }
+  p { margin: 0 0 16px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  pre {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+  figure { margin: 24px 0 8px; }
+  figure img {
+    width: 100%;
+    height: auto;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 11px;
+  }
+  figcaption { color: var(--muted); font-size: 13.5px; margin-top: 9px; text-align: center; }
+
+  ul { padding-left: 22px; margin: 0 0 16px; }
+  li { margin-bottom: 7px; }
+
+  .note {
+    border-left: 3px solid var(--warn);
+    background: var(--card);
+    border-radius: 0 9px 9px 0;
+    padding: 14px 18px;
+    margin: 22px 0;
+  }
+  .note b { color: var(--warn); }
+
+  a { color: var(--accent); }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 22px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 14px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <img class="mark" src="img/icon-128.png" alt="">
+    <h1>Gainshift</h1>
+    <p class="tagline">Per-tab volume for Firefox, from silence to 600%.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://addons.mozilla.org/firefox/addon/gainshift/">Install for Firefox</a>
+      <a class="btn" href="https://github.com/MarshallPascal/gainshift">Source on GitHub</a>
+      <a class="btn" href="https://github.com/MarshallPascal/gainshift/issues">Report a site</a>
+    </div>
+  </header>
+
+  <p>
+    Firefox can mute a tab. It can't turn one down. Gainshift gives you the level
+    in between — drop a noisy tab to 25% and leave everything else alone, or push
+    a quiet one up to 600%.
+  </p>
+
+  <figure>
+    <img src="img/overview.png" alt="The Gainshift panel with each control labelled: slider, typed entry, presets, per-site line and per-frame readout">
+    <figcaption>Every control in the panel, labelled.</figcaption>
+  </figure>
+
+  <h2>Why this one works where others don't</h2>
+  <p>
+    Most volume extensions go looking for <code>&lt;video&gt;</code> and
+    <code>&lt;audio&gt;</code> tags. That is fine on YouTube. It fails on a
+    surprising amount of the web, because plenty of pages make sound without ever
+    creating one: browser games, emulators and custom players push audio straight
+    through the Web Audio API, or through <code>Audio</code> objects built in
+    JavaScript and never added to the page at all. On those, a DOM-scanning
+    extension reports "no audio found" while the page is plainly making noise.
+  </p>
+  <p>Gainshift works in three places instead:</p>
+  <ul>
+    <li>the <b>Web Audio graph</b>, which is where game and engine audio lives</li>
+    <li>ordinary <b>media elements</b> in the page</li>
+    <li><b>detached <code>Audio</code> objects</b>, created in code and never inserted</li>
+  </ul>
+  <p>
+    It also follows audio into nested cross-origin frames, so a game embedded
+    three or four iframes deep inside a page still answers.
+  </p>
+
+  <h2>Below 100%, and above it</h2>
+  <p>
+    These are two different mechanisms, and the difference explains the one real
+    limitation.
+  </p>
+  <p>
+    <b>Below 100%</b>, media elements are turned down through their own
+    <code>volume</code> property and Web Audio is scaled in the graph. Both are
+    exact multiplications. No media element is re-routed, nothing is re-encoded,
+    nothing is degraded.
+  </p>
+  <p>
+    <b>Above 100%</b> there is no such shortcut: to make an element louder than
+    its own maximum, the audio has to be routed through Web Audio and amplified.
+  </p>
+
+  <div class="note">
+    <b>The one limitation.</b> Boosting doesn't work on media served from another
+    domain without CORS headers — the browser blocks the route and the tab goes
+    silent instead of loud. Returning to 100% and reloading recovers it. The panel
+    warns you the moment you cross 100%, and names the actual reason if
+    amplification fails rather than guessing.
+  </div>
+
+  <figure>
+    <img src="img/boost.png" alt="The panel at 250%, showing the amber boost indicator and the warning about cross-origin media">
+    <figcaption>Above 100%, with the warning shown at the moment you cross it.</figcaption>
+  </figure>
+
+  <h2>Privacy</h2>
+  <p>
+    No network requests of any kind. Nothing is collected, nothing is transmitted,
+    and there is no analytics, telemetry or server. Local storage holds the
+    hostnames you chose a level for and the number you chose — nothing else, and
+    it never leaves your browser.
+  </p>
+
+  <figure>
+    <img src="img/privacy.png" alt="A summary of what Gainshift stores and what it does not collect">
+    <figcaption>What is stored, and what isn't.</figcaption>
+  </figure>
+
+  <h2>Build it yourself</h2>
+  <p>
+    There is no compilation step — the <code>.xpi</code> is fifteen files in a
+    zip. The build is deterministic, so a clean checkout reproduces the published
+    file <b>byte for byte</b>:
+  </p>
+<pre><code>git clone https://github.com/MarshallPascal/gainshift
+cd gainshift/src
+./build.sh --verify path/to/gainshift.xpi</code></pre>
+  <p>
+    That prints <code>IDENTICAL (byte for byte)</code>. The source ships with 148
+    tests and no dependencies — <code>./build.sh --test</code> runs them.
+  </p>
+
+  <footer>
+    MIT licensed · <a href="https://github.com/MarshallPascal/gainshift">GitHub</a>
+    · <a href="https://addons.mozilla.org/firefox/addon/gainshift/">addons.mozilla.org</a>
+  </footer>
+
+</div>
+</body>
+</html>

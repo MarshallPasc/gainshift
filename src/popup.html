@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gainshift</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #101318;
+    --muted: #5b6472;
+    --line: #e3e6ea;
+    --accent: #1d4ed8;
+    --warn: #b45309;
+    --good: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1d21;
+      --fg: #eef1f5;
+      --muted: #99a2ae;
+      --line: #2f333a;
+      --accent: #6b9bff;
+      --warn: #f0a742;
+      --good: #4ade80;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    width: 290px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 14px;
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .title { font-weight: 600; letter-spacing: -0.01em; }
+
+  .entry {
+    display: flex;
+    align-items: baseline;
+    gap: 1px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 6px 2px 4px;
+  }
+  .entry:focus-within { border-color: var(--accent); }
+
+  #entry {
+    width: 46px;
+    border: 0;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    padding: 0;
+    outline: none;
+    -moz-appearance: textfield;
+  }
+  #entry::-webkit-outer-spin-button,
+  #entry::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  #entry.boost { color: var(--warn); }
+  #entry.muted { color: var(--muted); }
+
+  .entry .sign { font-size: 12px; font-weight: 600; color: var(--muted); }
+
+  /* At 0 the "%" gives way to a mute mark. Driven entirely by the .muted class
+     popup.js already puts on #entry, via a sibling selector - no extra script,
+     and no second place that has to agree about what counts as muted. */
+  .mute-mark {
+    display: none;
+    align-self: center;
+    width: 15px;
+    height: 15px;
+    margin-left: 3px;
+    color: var(--fg);
+  }
+  #entry.muted ~ .sign { display: none; }
+  #entry.muted ~ .mute-mark { display: block; }
+
+  input[type="range"] { width: 100%; margin: 4px 0 2px; accent-color: var(--accent); }
+
+  .scale {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 12px;
+  }
+
+  .presets { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin-bottom: 12px; }
+  button {
+    font: inherit; font-size: 11px; padding: 5px 0;
+    border: 1px solid var(--line); background: transparent; color: var(--fg);
+    border-radius: 6px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+
+  .hint {
+    color: var(--muted);
+    font-size: 10px;
+    margin: -6px 0 10px;
+  }
+
+  .site {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 10px;
+    min-height: 18px;
+  }
+  .site .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .site .name b { color: var(--fg); font-weight: 600; }
+  .site .forget {
+    flex: none;
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 5px;
+    color: var(--muted);
+  }
+  .site .forget:hover { border-color: var(--warn); color: var(--warn); }
+
+  .status {
+    border-top: 1px solid var(--line);
+    padding-top: 9px;
+    color: var(--muted);
+    font-size: 11px;
+    min-height: 28px;
+  }
+  .status b { color: var(--fg); font-weight: 600; }
+  .status .warn { color: var(--warn); }
+
+  .frames {
+    margin-top: 8px;
+    border-top: 1px solid var(--line);
+    padding-top: 7px;
+    max-height: 120px;
+    overflow-y: auto;
+    font-size: 10.5px;
+  }
+  .frame {
+    display: grid;
+    grid-template-columns: 12px 1fr auto;
+    gap: 6px;
+    align-items: baseline;
+    padding: 1px 0;
+    color: var(--muted);
+  }
+  .frame .mark { font-size: 11px; line-height: 1; }
+  .frame .mark.good { color: var(--good); }
+  .frame .mark.idle { color: var(--muted); }
+  .frame .mark.bad  { color: var(--warn); }
+  .frame .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .frame .note { font-variant-numeric: tabular-nums; opacity: 0.8; }
+</style>
+</head>
+<body>
+
+  <div class="head">
+    <span class="title">Gainshift</span>
+    <span class="entry">
+      <input type="number" id="entry" min="0" max="600" step="1" value="100"
+             aria-label="Volume percent">
+      <span class="sign">%</span>
+      <svg class="mute-mark" viewBox="0 0 24 24" role="img" aria-label="Muted">
+        <path fill="currentColor"
+              d="M3 9.6a1 1 0 0 1 1-1h2.4l3.4-3a.9.9 0 0 1 1.5.7v11.4a.9.9 0 0 1-1.5.7l-3.4-3H4a1 1 0 0 1-1-1z"/>
+        <g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+          <path d="M15.2 9.8 L20 14.6"/>
+          <path d="M20 9.8 L15.2 14.6"/>
+        </g>
+      </svg>
+    </span>
+  </div>
+
+  <input type="range" id="slider" min="0" max="600" step="1" value="100">
+  <div class="scale">
+    <span>0</span><span>100</span><span>300</span><span>600%</span>
+  </div>
+
+  <div class="presets">
+    <button data-v="0">0</button>
+    <button data-v="25">25</button>
+    <button data-v="50">50</button>
+    <button data-v="100">100</button>
+    <button data-v="200">200</button>
+  </div>
+
+  <div class="hint">Type a value, or use ↑ ↓ in the box or on the slider for 1% steps.</div>
+
+  <div class="site" id="site"></div>
+
+  <div class="status" id="status">Reading tab…</div>
+  <div class="frames" id="frames"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

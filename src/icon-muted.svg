@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bgm" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#64748b"/>
+      <stop offset="1" stop-color="#334155"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="28" fill="url(#bgm)"/>
+
+  <!-- Identical speaker geometry to icon.svg, so this reads as the same mark in
+       a different state rather than a different mark. -->
+  <path d="M26 57 a4 4 0 0 1 4 -4 h9 l17 -17 a3.5 3.5 0 0 1 6 2.5 v51 a3.5 3.5 0 0 1 -6 2.5 l-17 -17 h-9 a4 4 0 0 1 -4 -4 z"
+        fill="#ffffff"/>
+
+  <!-- The X sits exactly where icon.svg's three arcs sit. Swapping waves for an
+       X keeps the speaker whole: a slash drawn across the speaker breaks it into
+       disconnected shapes and stops reading as a speaker at small sizes. -->
+  <g stroke="#ffffff" stroke-width="11" stroke-linecap="round" fill="none">
+    <path d="M73 51 L97 77"/>
+    <path d="M97 51 L73 77"/>
+  </g>
+</svg>

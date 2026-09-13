@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bgs" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#4338ca"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="26" fill="url(#bgs)"/>
+
+  <!-- larger speaker, fewer and heavier waves: legible at 16px -->
+  <path d="M22 55 a5 5 0 0 1 5 -5 h11 l20 -20 a4 4 0 0 1 7 3 v58 a4 4 0 0 1 -7 3 l-20 -20 h-11 a5 5 0 0 1 -5 -5 z"
+        fill="#ffffff"/>
+
+  <g fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round">
+    <path d="M75.9 48.7 A20 20 0 0 1 75.9 79.3"/>
+    <path d="M84.9 38.0 A34 34 0 0 1 84.9 90.0" opacity="0.6"/>
+  </g>
+</svg>
