@@ -27,8 +27,8 @@ function eq(name, got, want) {
 function makeEl(tag, id) {
   const classes = new Set();
   const el = {
-    tagName: tag, id: id || "", value: "", textContent: "",
-    children: [], listeners: {}, dataset: {}, className: "",
+    tagName: tag, id: id || "", value: "",
+    children: [], listeners: {}, dataset: {},
     classList: {
       add: (c) => classes.add(c),
       remove: (c) => classes.delete(c),
@@ -41,10 +41,33 @@ function makeEl(tag, id) {
     blur: () => {},
     select: () => {},
   };
+  // Writing textContent throws away the children — that is how popup.js empties
+  // the site row and the status line before redrawing them. A mock that kept the
+  // old children would let a stale node answer a query and hide a real bug.
+  let text = "";
+  Object.defineProperty(el, "textContent", {
+    enumerable: true,
+    get: () => text,
+    set: (v) => { text = v == null ? "" : String(v); el.children.length = 0; },
+  });
+
+  // A real element keeps `className` and `classList` looking at the same set of
+  // classes. popup.js writes one and reads the other (node() assigns className,
+  // paint() calls classList.toggle), so the mock has to do the same or a test
+  // can pass against code that would be broken in the browser.
+  Object.defineProperty(el, "className", {
+    enumerable: true,
+    get: () => [...classes].join(" "),
+    set: (v) => {
+      classes.clear();
+      String(v == null ? "" : v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c));
+    },
+  });
   return el;
 }
 
 function makeEnv(stored, opts = {}) {
+  let siteLevel = typeof stored.siteValue === "number" ? stored.siteValue : null;
   const els = {
     slider: makeEl("input", "slider"),
     entry: makeEl("input", "entry"),
@@ -58,6 +81,7 @@ function makeEnv(stored, opts = {}) {
     return b;
   });
 
+  const sent = [];
   const sentTypes = [];
   const document = {
     getElementById: (id) => els[id] || null,
@@ -69,9 +93,22 @@ function makeEnv(stored, opts = {}) {
     tabs: { query: async () => (opts.noTab ? [] : [{ id: 7 }]) },
     runtime: {
       sendMessage: async (m) => {
+        sent.push(m);
         sentTypes.push(m.type);
         if (m.type === "lookupVolume") return stored;
-        if (m.type === "storeVolume") return { ok: true, host: "site.example", remembered: true };
+        if (m.type === "storeVolume") {
+          // Mirror the background page: a tab-scoped write leaves the site
+          // entry exactly as it was, a site-scoped one replaces it.
+          const scope = m.scope === "tab" ? "tab" : "site";
+          if (scope === "site") siteLevel = m.value === 1 ? null : m.value;
+          return {
+            ok: true,
+            host: stored.host,
+            scope,
+            remembered: siteLevel !== null,
+            siteValue: siteLevel
+          };
+        }
         if (m.type === "fanOut") {
           return [{ frameId: 0, url: "https://site.example/", ok: true,
                     state: { mediaCount: 1, audioContexts: 0, hookAlive: true } }];
@@ -91,8 +128,36 @@ function makeEnv(stored, opts = {}) {
   vm.createContext(ctx);
   vm.runInContext(SRC, ctx);
 
+  const kids = (el) => el.children;
+  const scopeRow = () => kids(els.site).find((c) => c.className === "scope");
+  // append() takes raw strings as well as elements ("Saved for ", then a <b>),
+  // so the walk has to cope with a child that has no children of its own.
+  // Children are joined with a space because the row lays them out with a flex
+  // `gap`, so that is what the eye sees between them.
+  const textOf = (el) =>
+    typeof el === "string" ? el
+      : (el.textContent || "") + (el.children || []).map(textOf).join(" ");
+
   return {
-    els, presets, sentTypes,
+    els, presets, sentTypes, sent,
+    // The scope control, as the user sees it.
+    scopeButtons: () => (scopeRow() ? kids(scopeRow()) : []),
+    activeScope: () => {
+      const b = (scopeRow() ? kids(scopeRow()) : []).find((x) => x._classes.has("on"));
+      return b ? b.textContent : null;
+    },
+    clickScope: (label) => {
+      const b = kids(scopeRow()).find((x) => x.textContent === label);
+      b.listeners.click.forEach((f) => f());
+    },
+    siteText: () => kids(els.site).map(textOf).join(" ").replace(/\s+/g, " ").trim(),
+    levelText: () => {
+      const name = kids(els.site).find((c) => c.className === "name");
+      const lvl = name && kids(name).find((c) => c.className === "lvl");
+      return lvl ? lvl.textContent : null;
+    },
+    hasForget: () => kids(els.site).some((c) => c.className === "forget"),
+    lastStore: () => [...sent].reverse().find((m) => m.type === "storeVolume") || null,
     // What the user sees in the box, and the class the stylesheet keys off.
     shown: () => els.entry.value,
     muted: () => els.entry._classes.has("muted"),
@@ -191,6 +256,125 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     eq("0 is active when muted", t.activePreset(), ["0"]);
     t.type(137);
     eq("no preset matches 137", t.activePreset(), []);
+  }
+
+
+  console.log("\n6. The scope control shows which of the two you are in");
+  {
+    const t = makeEnv({ value: 0.45, host: "youtube.com", remembered: true,
+                        scope: "site", siteValue: 0.45 });
+    await wait(20);
+    eq("both choices are always offered", t.scopeButtons().map((b) => b.textContent), ["Tab", "Site"]);
+    eq("site is the default", t.activeScope(), "Site");
+    eq("and it reads as saved", t.siteText().includes("Saved for youtube.com"), true);
+    eq("Forget is offered", t.hasForget(), true);
+  }
+  {
+    const t = makeEnv({ value: 1, host: "fresh.example", remembered: false,
+                        scope: "site", siteValue: null });
+    await wait(20);
+    eq("an unsaved site says so", t.siteText().includes("Applies to fresh.example"), true);
+    eq("and offers no Forget", t.hasForget(), false);
+  }
+
+  console.log("\n7. Choosing Tab keeps the site's level visible");
+  {
+    // The point of the label: while the tab is held apart, you can still see
+    // what the site itself would do, so it is obvious which is the exception.
+    const t = makeEnv({ value: 0.9, host: "youtube.com", remembered: true,
+                        scope: "tab", siteValue: 0.45 });
+    await wait(20);
+    eq("opens in tab scope", t.activeScope(), "Tab");
+    eq("names the site's own level", t.siteText().includes("youtube.com keeps 45%"), true);
+    // The level has to be its own element: the stylesheet lets the hostname
+    // shorten on a narrow row and pins this, and a rendered check caught the
+    // level being ellipsised away when the two shared one text node.
+    eq("the level is a separate element the CSS can protect", t.levelText(), "keeps 45%");
+  }
+  {
+    const t = makeEnv({ value: 0.3, host: "rainbet.com", remembered: false,
+                        scope: "tab", siteValue: null });
+    await wait(20);
+    eq("with nothing saved it says unsaved", t.siteText().includes("rainbet.com unsaved"), true);
+  }
+
+  console.log("\n8. Switching to Tab stops writing to the site");
+  {
+    const t = makeEnv({ value: 0.5, host: "youtube.com", remembered: true,
+                        scope: "site", siteValue: 0.5 });
+    await wait(20);
+
+    t.press(25);                       // a site-scoped change, as today
+    await wait(40);
+    eq("sent with site scope", t.lastStore().scope, "site");
+
+    t.clickScope("Tab");
+    await wait(40);
+    eq("the control follows", t.activeScope(), "Tab");
+    eq("and the next write is tab-scoped", t.lastStore().scope, "tab");
+    eq("at the level already showing", t.lastStore().value, 0.25);
+
+    t.commit(60);                      // 60 is not a preset, so use the box
+    await wait(40);
+    eq("later changes stay tab-scoped", t.lastStore().scope, "tab");
+    eq("...carrying the new value", t.lastStore().value, 0.6);
+  }
+
+  console.log("\n9. Switching back to Site writes it to the site again");
+  {
+    const t = makeEnv({ value: 0.5, host: "youtube.com", remembered: true,
+                        scope: "tab", siteValue: 0.5 });
+    await wait(20);
+    eq("starts in tab scope", t.activeScope(), "Tab");
+    t.commit(30);
+    await wait(40);
+    eq("tab-scoped while it lasts", t.lastStore().scope, "tab");
+
+    t.clickScope("Site");
+    await wait(40);
+    eq("now site-scoped", t.lastStore().scope, "site");
+    eq("carrying what was on screen", t.lastStore().value, 0.3);
+    eq("the control agrees", t.activeScope(), "Site");
+  }
+
+  console.log("\n10. Clicking the scope you are already in changes nothing");
+  {
+    const t = makeEnv({ value: 0.5, host: "youtube.com", remembered: true,
+                        scope: "site", siteValue: 0.5 });
+    await wait(20);
+    const before = t.sent.length;
+    t.clickScope("Site");
+    await wait(40);
+    eq("no message sent", t.sent.length, before);
+    eq("still site", t.activeScope(), "Site");
+  }
+
+  console.log("\n11. A tab with no host has no scope control to offer");
+  {
+    const t = makeEnv({ value: 1, host: null, remembered: false, scope: "site", siteValue: null });
+    await wait(20);
+    eq("nothing rendered", t.scopeButtons(), []);
+    eq("the row is empty", t.siteText(), "");
+  }
+
+  console.log("\n12. Forget is not undone by a save still waiting to go out");
+  {
+    // Drag, then click Forget before the 350ms save debounce fires. The queued
+    // save used to land after Forget and store the dragged level right back.
+    const t = makeEnv({ value: 0.45, host: "youtube.com", remembered: true,
+                        scope: "site", siteValue: 0.45 });
+    await wait(20);
+    t.els.slider.value = "150";
+    t.els.slider.listeners.input.forEach((f) => f());
+    await wait(100);                   // the apply has gone out, the save has not
+    const forget = t.els.site.children.find((c) => c.className === "forget");
+    forget.listeners.click.forEach((f) => f());
+    await wait(500);
+
+    const afterForget = t.sentTypes.slice(t.sentTypes.indexOf("forgetSite"));
+    eq("nothing is saved after Forget", afterForget.includes("storeVolume"), false);
+    eq("the panel shows 100", t.shown(), "100");
+    eq("and no longer claims a saved level", t.siteText().includes("Saved for"), false);
   }
 
   console.log(`\n${pass} passed, ${fail} failed\n`);

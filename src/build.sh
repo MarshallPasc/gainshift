@@ -100,6 +100,7 @@ if [ "$RUN_TESTS" -eq 1 ]; then
   node test-audio-hook.js
   node test-background.js
   node test-popup.js
+  node test-content.js
   echo
 fi
 

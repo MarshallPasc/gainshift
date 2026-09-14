@@ -3,7 +3,8 @@
 _Distributed as `gainshift.xpi` / `gainshift-source.zip`._
 
 Per-tab volume control for Firefox, 0–600%, covering Web Audio as well as media
-elements.
+elements. Levels are remembered per site, can be held for a single tab instead,
+and can be nudged from the keyboard without opening the panel.
 
 **Nothing here is compiled.** No bundler, no minifier, no transpiler, no
 dependencies, no package manager. The packaged `.xpi` is these files zipped,
@@ -95,7 +96,7 @@ SHA-256 a real check rather than a formality:
 $ ./build.sh
 == built ==
 /path/to/gainshift.xpi
-e5a8cd4d33cc726c3506d6a05af43192a65b1873627e4ca357ba1491ddf34c49  gainshift.xpi
+19f53223e1eb00552b904bdafb256ff1c4365355667ffbc70e6d7e630ed90558  gainshift.xpi
 ```
 
 **To confirm the built file matches the one submitted to AMO:**
@@ -149,12 +150,13 @@ regenerate them.
 | `manifest.json` | — | Manifest V2. Two content scripts, one background page. |
 | `audio-hook.js` | **page world**, `document_start`, all frames | All audio work. Patches `AudioContext`, `Audio`, `HTMLMediaElement.prototype.play`, and observes `createMediaElementSource` / `MediaElementAudioSourceNode`. |
 | `content.js` | isolated world, `document_idle`, all frames | Relay only. Carries the level to `audio-hook.js` via a data attribute on `<html>` and reports back what it found. |
-| `background.js` | background page | Per-site volume memory in `storage.local`; fans messages out to every frame via `webNavigation.getAllFrames`. |
-| `popup.html` / `popup.js` | popup | UI. Slider, typed entry, presets, per-site line, per-frame readout. |
+| `background.js` | background page | Per-site volume memory in `storage.local`, the per-tab override that sits on top of it, and the keyboard commands. Fans messages out to every frame via `webNavigation.getAllFrames`. |
+| `popup.html` / `popup.js` | popup | UI. Slider, typed entry, presets, the Tab/Site scope control, per-frame readout. |
 | `icon.svg`, `icon-small.svg` | — | Vector sources for the normal icons (see below). |
 | `icon-muted.svg`, `icon-muted-small.svg` | — | Vector sources for the muted icons. |
 | `build.sh` | — | The build. Zips the fifteen packaged files reproducibly. Not itself packaged. |
-| `test-audio-hook.js`, `test-background.js`, `test-popup.js` | Node | Test suites, 148 assertions. Not packaged. |
+| `test-audio-hook.js`, `test-background.js`, `test-popup.js`, `test-content.js` | Node | Test suites, 321 assertions. Not packaged. |
+| `mutate-2.1.0.js` | Node | Breaks each 2.1.0 guarantee in the real source in turn and requires the suites to notice. A development check, not part of the build. Not packaged. |
 
 ### Why a main-world content script
 
@@ -208,6 +210,48 @@ extension is never the reason a page object stays alive.
 | `tabs` | `tabs.get()` for the active tab's hostname, `sendMessage` with a `frameId`, and `onUpdated` / `onRemoved` for lifecycle. |
 | `storage` | Per-site volume levels, stored locally. |
 
+The keyboard shortcuts added in 2.1.0 need **no new permission**. `commands` is a
+manifest key rather than a permission, and the listener only calls the same
+internal functions the popup already calls.
+
+## Keyboard shortcuts
+
+Declared in `manifest.json` under `commands`, all re-bindable by the user in
+Firefox's *Manage Extension Shortcuts*:
+
+| Default | Command | Effect |
+|---|---|---|
+| `Alt+Shift+W` | `volume-up` | +5 percentage points |
+| `Alt+Shift+X` | `volume-down` | −5 percentage points |
+| `Alt+Shift+N` | `volume-reset` | Set this tab to 100% |
+| `Alt+Shift+Q` | `volume-mute` | Mute / unmute this tab |
+| `Alt+Shift+G` | `_execute_browser_action` | Open the panel |
+
+Two properties of that listener are deliberate and are pinned by tests:
+
+- **A keystroke never writes to storage.** It sets a *tab* override only, so
+  boosting one video does not silently redefine the level for the whole site.
+- **Reset sets 100% on the tab, not on the site.** The override is set and
+  `sites` is untouched, so a level the user deliberately saved survives; the tab
+  returns to it when it navigates away or closes.
+
+`Ctrl+Alt` was avoided because it is AltGr on German and other European layouts,
+and `Ctrl+Shift` because Firefox itself already uses nearly every letter there.
+
+The letters matter more than the modifier. On Windows, `Alt+Shift+<letter>`
+still fires the menu bar's access keys, so a letter that is a menu mnemonic is
+unusable — `F E V S B T H` on an English build, `D B A C L E H` on a German one,
+and `D` is the address bar everywhere. The first set of defaults used `S`, `D`
+and `V` and three of the five shortcuts simply opened menus. `W X N Q G` avoid
+both localisations.
+
+Even that is not sufficient. `R` was the second choice for reset, is not a menu
+key, and was bound correctly according to Firefox's own shortcut page — and it
+still never fired on one machine, because an application outside the browser
+held it as a global hotkey. An extension cannot see that, so every shortcut here
+is documented as a default to be re-bound rather than as something guaranteed to
+work.
+
 ## Data
 
 Nothing is collected or transmitted. The extension makes **no network requests of
@@ -248,15 +292,16 @@ python3 -c "import cairosvg; cairosvg.svg2png(url='icon.svg', write_to='icon-128
 
 ## Tests
 
-Two harnesses, no dependencies beyond Node itself:
+Four harnesses, no dependencies beyond Node itself:
 
 ```
-node test-audio-hook.js     # 84 assertions
-node test-background.js     # 39 assertions
-node test-popup.js          # 25 assertions
+node test-audio-hook.js     # 124 assertions
+node test-background.js     # 118 assertions
+node test-popup.js          #  53 assertions
+node test-content.js        #  26 assertions
 ```
 
-or `./build.sh --test`, which runs all three and then builds. Node 18 or newer;
+or `./build.sh --test`, which runs all four and then builds. Node 18 or newer;
 no `npm install`, because there is nothing to install.
 
 They run the real source in a fresh VM context against a mock Web Audio API and a
@@ -278,17 +323,51 @@ navigating to another site — restoring the normal icon; a toolbar call that
 rejects because the tab has closed not escaping as an unhandled rejection; and a
 site stored at 0% opening the panel at 0 rather than at 100.
 
-`test-popup.js` runs `popup.js` against a small mock DOM. It asserts the class
+`test-content.js` covers the one place page-controlled data crosses out of the
+page: the `data-gainshift-*` attributes live in the page's own DOM, so a hostile
+page can write them, and everything the relay hands to the popup is therefore
+untrusted input. `test-popup.js` runs `popup.js` against a small mock DOM. It asserts the class
 `popup.js` puts on the value box, which is the contract the stylesheet keys off;
 the stylesheet itself needs a layout engine to assert against and is checked by
-eye.
+eye, in both colour schemes and with hostnames long enough to overflow the row.
+That check is not ceremonial: it is what caught the site's own level being
+ellipsised away behind a long hostname, which the DOM assertions could not see
+because the text was present and merely invisible.
 
 Gain assertions measure the product along the chain to the destination, not the
 value on a single node — two chained gains of 0.5 each read as 0.5 individually
 while actually delivering 0.25.
 
+The 2.1.0 additions are covered on both sides of the message boundary: a
+keyboard step landing on whole percentage points and clamping at 0 and 600; two
+tabs on one site held at different levels; a tab-scoped change leaving the stored
+site level untouched; scope, override and mute history all dropped together when
+a tab closes, navigates to another site, or the site is forgotten; unmute
+returning to the level it came from, including when that level came from the
+site; and the panel's Tab/Site control sending the scope it is showing.
+
 Each fix is pinned by a test that fails if the fix is reverted — verified by
-mutation, not assumed.
+mutation, not assumed. `node mutate-2.1.0.js` automates that for 2.1.0: it
+rewrites the real source thirty-one times, each time breaking one guarantee, and
+requires the suites to fail every time. Two holes found that way are why
+`lastPushed()` exists in `test-background.js` — the maps agreeing is not the same
+as the audio being told.
+
+---
+
+## The level is a multiplier
+
+Gainshift's level multiplies whatever the page is already doing; it does not
+replace it. A page whose own player sits at 20% and a Gainshift level of 50%
+gives 10%, and 100% gives the page's 20% back untouched. This holds on both
+paths — the master gain scales the page's Web Audio graph, and
+`setElementVolume()` writes `pageBase(el) * factor` into `el.volume`, where
+`pageBase` is the page's own value, re-read whenever the page moves it.
+
+That last part is what makes a site's own volume control keep working while a
+level is set: a `volumechange` carrying a value we did not write is the viewer
+using the page's own slider, so it becomes the new base rather than something to
+overwrite.
 
 ---
 

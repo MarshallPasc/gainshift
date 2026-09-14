@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Gainshift",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "description": "Per-tab volume control with amplification up to 600%. Reaches Web Audio games and nested frames, not just media elements.",
   "browser_specific_settings": {
     "gecko": {
@@ -64,5 +64,36 @@
     "64": "icon-64.png",
     "96": "icon-96.png",
     "128": "icon-128.png"
+  },
+  "commands": {
+    "volume-up": {
+      "suggested_key": {
+        "default": "Alt+Shift+W"
+      },
+      "description": "Volume up 5%"
+    },
+    "volume-down": {
+      "suggested_key": {
+        "default": "Alt+Shift+X"
+      },
+      "description": "Volume down 5%"
+    },
+    "volume-reset": {
+      "suggested_key": {
+        "default": "Alt+Shift+N"
+      },
+      "description": "Set this tab to 100%"
+    },
+    "volume-mute": {
+      "suggested_key": {
+        "default": "Alt+Shift+Q"
+      },
+      "description": "Mute or unmute this tab"
+    },
+    "_execute_browser_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+G"
+      }
+    }
   }
 }

@@ -14,7 +14,10 @@ const MAX = 600;
 
 let tabId = null;
 let currentPct = 100;
-let siteHost = null;
+
+/* What the site line is currently showing. Kept as one object so every place
+   that redraws it works from the same shape the background page sends back. */
+let site = { host: null, remembered: false, scope: "site", siteValue: null };
 
 function node(tag, className, text) {
   const el = document.createElement(tag);
@@ -39,26 +42,76 @@ function paint(pct, source) {
   buttons.forEach(b => b.classList.toggle("active", Number(b.dataset.v) === pct));
 }
 
-function renderSite(host, remembered) {
-  siteEl.textContent = "";
-  if (!host) return;
+/** 0.45 -> "45%". Named asPct because `pct` is a parameter name in
+    several functions below, and shadowing a helper is a trap. */
+function asPct(v) { return Math.round(v * 100) + "%"; }
 
+/** `info` is exactly what the background page returns from lookupVolume and
+    storeVolume: { host, remembered, scope, siteValue }. */
+function renderSite(info) {
+  siteEl.textContent = "";
+  if (!info || !info.host) { site.host = null; return; }
+
+  site = {
+    host: info.host,
+    remembered: !!info.remembered,
+    scope: info.scope === "tab" ? "tab" : "site",
+    siteValue: typeof info.siteValue === "number" ? info.siteValue : null
+  };
+
+  const scope = node("span", "scope");
+  for (const opt of [
+    { key: "tab",  label: "Tab",
+      hint: "Hold this level on this tab only. Other tabs on this site are unaffected, and nothing is saved." },
+    { key: "site", label: "Site",
+      hint: "Remember this level for every page on this site." }
+  ]) {
+    const b = node("button", opt.key === site.scope ? "on" : null, opt.label);
+    b.title = opt.hint;
+    b.addEventListener("click", () => chooseScope(opt.key));
+    scope.append(b);
+  }
+  siteEl.append(scope);
+
+  /* Each piece is its own element rather than loose text so the stylesheet can
+     decide what gives way when the row is too narrow: the hostname shortens,
+     the level never does. A long hostname was swallowing the "45%" - the one
+     part of that line worth reading. */
   const label = node("span", "name");
-  label.append(remembered ? "Saved for " : "Applies to ");
-  label.append(node("b", null, host));
+  if (site.scope === "tab") {
+    // Say what the site would still be, so it is obvious the tab is the
+    // exception rather than the rule.
+    label.append(node("b", null, site.host));
+    label.append(node("span", "lvl",
+      site.siteValue === null ? "unsaved" : "keeps " + asPct(site.siteValue)));
+  } else {
+    label.append(node("span", "lead", site.remembered ? "Saved for" : "Applies to"));
+    label.append(node("b", null, site.host));
+  }
   siteEl.append(label);
 
-  if (remembered) {
+  if (site.remembered) {
     const btn = node("button", "forget", "Forget");
     btn.addEventListener("click", async () => {
+      // A drag that ended just before this click still has a save queued, and
+      // letting it land would put back the level Forget is about to erase.
+      cancelPending();
       try { await NS.runtime.sendMessage({ type: "forgetSite", tabId }); }
       catch (e) { /* ignore */ }
       paint(100, null);
-      renderSite(host, false);
+      renderSite({ host: site.host, remembered: false, scope: "site", siteValue: null });
       await refresh(100, false);
     });
     siteEl.append(btn);
   }
+}
+
+/** Switching scope re-applies the level it is already showing, so the choice
+    takes effect now rather than at the next nudge of the slider. */
+function chooseScope(next) {
+  if (!site.host || next === site.scope) return;
+  site.scope = next;
+  push(currentPct, null, true);
 }
 
 function hostOf(url) {
@@ -175,19 +228,26 @@ async function doApply(pct) {
   await refresh(pct, true);
 }
 
-async function doPersist(pct) {
+async function doPersist(value) {
   try {
-    const r = await NS.runtime.sendMessage({ type: "storeVolume", tabId, value: pct / 100 });
-    if (r && r.host) { siteHost = r.host; renderSite(r.host, r.remembered); }
+    const r = await NS.runtime.sendMessage({
+      type: "storeVolume", tabId, value: value / 100, scope: site.scope
+    });
+    if (r && r.host) renderSite(r);
   } catch (e) { /* ignore */ }
 }
 
-function flush() {
+/** Drop whatever the debounce is still holding, without sending it. */
+function cancelPending() {
   if (applyTimer) { clearTimeout(applyTimer); applyTimer = null; }
   if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
-  if (queued === null) return;
-  const value = queued;      // take it, so nothing can act on it twice
   queued = null;
+}
+
+function flush() {
+  const value = queued;      // take it, so nothing can act on it twice
+  cancelPending();
+  if (value === null) return;
   doApply(value);
   doPersist(value);
 }
@@ -254,11 +314,10 @@ buttons.forEach(b => {
     // is falsy, so reopening the popup on a muted site claimed 100% while the
     // tab was in fact silent — and the first nudge of the slider unmuted it.
     const raw = stored && typeof stored.value === "number" ? stored.value : 1;
-    const pct = clamp(Math.round(raw * 100));
-    siteHost = (stored && stored.host) || null;
-    paint(pct, null);
-    renderSite(siteHost, !!(stored && stored.remembered));
-    await refresh(pct, false);
+    const level = clamp(Math.round(raw * 100));
+    paint(level, null);
+    renderSite(stored);
+    await refresh(level, false);
   } catch (e) {
     statusEl.textContent = "Could not read the active tab.";
   }

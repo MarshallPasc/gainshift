@@ -20,6 +20,14 @@
 
   let desired = 1;
 
+  /* Set once a setVolume has actually arrived from the popup. The startup
+     requestVolume below is answered by the background page at the moment it is
+     received, so its reply can land AFTER a newer level the user has just chosen
+     and quietly put the old one back. Narrow window - document_idle to the first
+     round trip - but a user who opens the panel the instant a page loads sits
+     right in it. */
+  let explicit = false;
+
   function setPageGain(v) {
     try {
       const r = document.documentElement;
@@ -45,20 +53,33 @@
     catch (e) { return 0; }
   }
 
+  /* This attribute lives in the page's own DOM, so the page can write it too. A
+     DOMException name is always a bare identifier; anything else is a page trying
+     to put text of its choosing in front of the user inside the extension's own
+     panel, where it would carry the extension's authority. Length is capped for
+     the same reason - an unbounded string here wrecks the popup's layout. */
+  function failKind() {
+    try {
+      const raw = document.documentElement.getAttribute(ATTR_BKIND) || "";
+      return /^[A-Za-z]{1,40}$/.test(raw) ? raw : "";
+    } catch (e) {
+      return "";
+    }
+  }
+
   function state() {
     const contexts = readCount(ATTR_CTX);
     const tracked  = readCount(ATTR_MEDIA);
     return {
       volume: desired,
       audioContexts: contexts,
+      // One DOM query, and only when the hook has not reported a count of its
+      // own. This used to run querySelectorAll twice per message, the second time
+      // for a `domMedia` field that nothing anywhere read.
       mediaCount: tracked === null ? domMediaCount() : tracked,
-      domMedia: domMediaCount(),
       hookAlive: contexts !== null,
       boostUnavailable: readCount(ATTR_BFAIL) || 0,
-      boostFailKind: (function () {
-        try { return document.documentElement.getAttribute(ATTR_BKIND) || ""; }
-        catch (e) { return ""; }
-      })(),
+      boostFailKind: failKind(),
       undecorated: readCount(ATTR_UNDEC) || 0,
       boosting: desired > 1
     };
@@ -68,6 +89,7 @@
     if (!msg || !msg.type) return;
 
     if (msg.type === "setVolume") {
+      explicit = true;
       desired = Math.max(0, Math.min(6, Number(msg.value) || 0));
       setPageGain(desired);
       return Promise.resolve(state());
@@ -81,7 +103,8 @@
   // Re-apply this tab's volume after a navigation within the frame.
   NS.runtime.sendMessage({ type: "requestVolume" })
     .then((r) => {
-      if (r && typeof r.value === "number") {
+      // Do not undo a level that arrived while this was in flight.
+      if (!explicit && r && typeof r.value === "number") {
         desired = r.value;
       }
       // Written even when it's 1, so the page-world hook's level is stated rather

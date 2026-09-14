@@ -57,6 +57,12 @@
   let   boostFailKind = "";          // DOMException name of the last failure
   let   undecorated = 0;             // contexts we could not intercept at all
 
+  // Element volume ownership. We have to be able to tell OUR value from the
+  // page's. Writing a flat 1 over a level the page chose is audible, and it used
+  // to happen even at 100%, where this extension is supposed to be inert.
+  const originalVolume = new WeakMap(); // el -> volume before we first wrote it
+  const ourWrite = new WeakMap();       // el -> the last value WE wrote
+
   let current = 1;
   let boostCtx = null;
   let boostGain = null;
@@ -75,15 +81,30 @@
     return out;
   }
 
-  function announce() {
+  // Every setAttribute on <html> is a DOM mutation, and it wakes any
+  // MutationObserver the page keeps on documentElement - frameworks commonly have
+  // one. Four of these five attributes rarely change, so remembering what was
+  // last written and skipping the no-ops removes most of that traffic: a game
+  // preloading 300 pooled sounds went from 1500 attribute writes to about 300.
+  const written = Object.create(null);
+
+  function put(r, attr, value) {
+    if (written[attr] === value) return;
+    written[attr] = value;
+    r.setAttribute(attr, value);
+  }
+
+  /** `counts` lets applyAll hand over registry lengths it has just computed,
+      instead of making us walk both registries a second time. */
+  function announce(counts) {
     const r = root();
     if (!r) return;
     try {
-      r.setAttribute(ATTR_CTX, String(live(gainRefs).length));
-      r.setAttribute(ATTR_MEDIA, String(live(mediaRefs).length));
-      r.setAttribute(ATTR_BFAIL, String(boostFailures));
-      r.setAttribute(ATTR_BKIND, boostFailKind);
-      r.setAttribute(ATTR_UNDEC, String(undecorated));
+      put(r, ATTR_CTX, String(counts ? counts.ctx : live(gainRefs).length));
+      put(r, ATTR_MEDIA, String(counts ? counts.media : live(mediaRefs).length));
+      put(r, ATTR_BFAIL, String(boostFailures));
+      put(r, ATTR_BKIND, boostFailKind);
+      put(r, ATTR_UNDEC, String(undecorated));
     } catch (e) { /* ignore */ }
   }
 
@@ -127,7 +148,13 @@
     if (ourWrappers.has(Real)) return;
 
     function Patched(...args) {
-      const ctx = new Real(...args);
+      // Reflect.construct rather than `new Real(...)`, so new.target survives:
+      // otherwise `class X extends AudioContext {}` yields an instance carrying
+      // AudioContext.prototype instead of X.prototype.
+      if (!new.target) {
+        throw new TypeError("Failed to construct '" + name + "': Please use the 'new' operator.");
+      }
+      const ctx = Reflect.construct(Real, args, new.target);
       try {
         decorate(ctx);
       } catch (e) {
@@ -155,7 +182,11 @@
   // scaled by the master gain above, so we must not also scale el.volume - that
   // would apply our factor twice.
   function markPageRouted(el) {
-    try { if (el) pageRouted.add(el); } catch (e) { /* ignore */ }
+    try {
+      if (!el) return;
+      pageRouted.add(el);
+      releaseToPage(el);
+    } catch (e) { /* ignore */ }
   }
 
   if (RealAudioContext && realCreateMediaElementSource) {
@@ -176,12 +207,19 @@
     const RealSourceNode = window.MediaElementAudioSourceNode;
     if (typeof RealSourceNode === "function") {
       function PatchedSourceNode(ctx, options) {
-        const node = new RealSourceNode(ctx, options);
+        if (!new.target) {
+          throw new TypeError("Failed to construct 'MediaElementAudioSourceNode': Please use the 'new' operator.");
+        }
+        const node = Reflect.construct(RealSourceNode, [ctx, options], new.target);
         if (options) markPageRouted(options.mediaElement);
         return node;
       }
       PatchedSourceNode.prototype = RealSourceNode.prototype;
       try { Object.setPrototypeOf(PatchedSourceNode, RealSourceNode); } catch (e) { /* ignore */ }
+      try {
+        Object.defineProperty(PatchedSourceNode, "name",
+          { value: "MediaElementAudioSourceNode", configurable: true });
+      } catch (e) { /* ignore */ }
       window.MediaElementAudioSourceNode = PatchedSourceNode;
     }
   } catch (e) { /* ignore */ }
@@ -226,21 +264,96 @@
     }
   }
 
+  /** Every write to an element's volume goes through here, so we always know
+      which value is ours and what the page had before we touched it.
+
+      The original is re-read each time we TAKE OVER, not just the first time the
+      element was ever seen. Between spells at 100% the element belongs to the
+      page again, and a player may well have moved its own level while we were
+      not holding it; handing back a value from two takeovers ago would be its
+      own small bug. While we are holding it, ourWrite is set and the recorded
+      original survives our own re-writes. */
+  /** The page's own level for this element - the number our factor multiplies.
+      1 until we have seen the element. */
+  function pageBase(el) {
+    return originalVolume.has(el) ? originalVolume.get(el) : 1;
+  }
+
+  function setElementVolume(el, factor) {
+    if (!ourWrite.has(el)) originalVolume.set(el, el.volume);
+
+    // Gainshift is a MULTIPLIER, not a replacement. The Web Audio path has
+    // always been one - our master gain scales whatever the page's own graph
+    // produced - and the media-element path was the odd one out, writing the
+    // factor straight into el.volume. So a video the user had already turned
+    // down to 20% in the site's own player jumped to 50% when they set
+    // Gainshift to 50%: LOUDER than before they touched the extension, and the
+    // site's own control silently discarded. 50% now means half of whatever the
+    // page was doing, which is what "50%" has always claimed to mean.
+    const target = Math.max(0, Math.min(1, pageBase(el) * factor));
+
+    // Claim it BEFORE the write. Assigning el.volume fires volumechange
+    // synchronously, which comes straight back through here - and with the claim
+    // recorded afterwards that re-entrant call looked like a fresh takeover and
+    // filed our own new value as "what the page had". The element then never got
+    // its real level back. Recorded twice because the browser may clamp what we
+    // asked for; the second is what actually landed.
+    ourWrite.set(el, target);
+    if (Math.abs(el.volume - target) > 0.01) el.volume = target;
+    ourWrite.set(el, el.volume);
+  }
+
+  /** Hand the element back to the page: either because the page has taken it
+      into its own graph, or because we are at 100% and have nothing to say.
+      Give back what it had before we interfered - but only if our value is still
+      the one standing. If the page has set its own level since, that is the one
+      that should win. */
+  function releaseToPage(el) {
+    if (!ourWrite.has(el)) return;
+    const mine = ourWrite.get(el);
+    ourWrite.delete(el);
+    try {
+      if (Math.abs(el.volume - mine) > 0.01) return;   // the page moved it; leave it
+      const base = pageBase(el);
+      if (Math.abs(el.volume - base) > 0.01) el.volume = base;
+    } catch (e) { /* ignore */ }
+  }
+
   function applyToElement(el) {
     try {
       if (pageRouted.has(el)) {
-        // Scaled by the page's own graph, which our master gain sits in.
-        el.volume = 1;
+        // The page routed this into its own graph, where our master gain already
+        // scales the result. Its element.volume belongs to the page: writing 1
+        // here overrode a level the page had chosen for its own mix, making such
+        // sites up to twice as loud as intended - and it did so even at 100%.
         return;
       }
 
-      if (current <= 1) {
-        el.volume = current;
+      if (current === 1) {
+        // 100% means "as though the extension were not installed" - which is
+        // what onVolumeChange has always said (`if (current === 1) return`),
+        // while this function disagreed and wrote 1 anyway. A player that
+        // restores its own saved level - a video site you keep at 30% - was
+        // pushed to full volume by an extension the user had never touched.
+        //
+        // An element we have never written to is left exactly as it is;
+        // releaseToPage returns immediately for those. One we did write to gets
+        // ITS OWN level back, not 1, so dragging the slider to 100% undoes us
+        // rather than overriding the page. Either way, if the page has moved the
+        // value since we wrote it, releaseToPage leaves the page's value alone.
+        releaseToPage(el);
         return;
       }
 
-      // Boost: pin the element and amplify through our gain node.
-      el.volume = 1;
+      if (current < 1) {
+        setElementVolume(el, current);
+        return;
+      }
+
+      // Boost: hold the element at the PAGE's own level (factor 1) and put the
+      // amplification in our gain node, so the result is still the page's level
+      // times our factor rather than full volume times our factor.
+      setElementVolume(el, 1);
       if (!boosted.has(el) && !boostFailed.has(el) && ensureBoostGraph()) {
         try {
           // Call the real method, so our own routing isn't recorded as the
@@ -280,12 +393,22 @@
     const RealAudio = window.Audio;
     if (typeof RealAudio === "function") {
       function PatchedAudio(...args) {
-        const el = new RealAudio(...args);
+        if (!new.target) {
+          throw new TypeError("Failed to construct 'Audio': Please use the 'new' operator.");
+        }
+        // new.target is forwarded so `class Sound extends Audio {}` still produces
+        // an instance carrying Sound.prototype. `new RealAudio(...)` discarded it.
+        const el = Reflect.construct(RealAudio, args, new.target);
         try { track(el); } catch (e) { /* ignore */ }
         return el;
       }
       PatchedAudio.prototype = RealAudio.prototype;
       try { Object.setPrototypeOf(PatchedAudio, RealAudio); } catch (e) { /* ignore */ }
+      // The AudioContext wrapper already preserved its .name; this one did not,
+      // so feature detection saw "PatchedAudio".
+      try {
+        Object.defineProperty(PatchedAudio, "name", { value: "Audio", configurable: true });
+      } catch (e) { /* ignore */ }
       window.Audio = PatchedAudio;
     }
   } catch (e) { /* ignore */ }
@@ -298,11 +421,18 @@
     const el = (e && (e.target || e.currentTarget));
     if (!el || current === 1) return;             // at 100% we never interfere
     if (pageRouted.has(el)) return;               // the page's graph owns it
-    const want = current <= 1 ? current : 1;
+    if (!ourWrite.has(el)) return;                // not ours to hold
+
+    // Whose change was this? If the value is not the one we last wrote, the
+    // PAGE moved it - the viewer using the site's own volume control while
+    // Gainshift is engaged. Stamping our number back on top is what made the
+    // site's slider feel broken; instead, take the new value as the page's
+    // level and re-apply our factor over it. The site's control keeps working,
+    // and our factor keeps meaning what it says.
+    if (Math.abs(el.volume - ourWrite.get(el)) > 0.01) originalVolume.set(el, el.volume);
+
     // Our own write re-fires this handler; the second pass matches and stops.
-    if (Math.abs(el.volume - want) > 0.01) {
-      try { el.volume = want; } catch (err) { /* ignore */ }
-    }
+    try { setElementVolume(el, current <= 1 ? current : 1); } catch (err) { /* ignore */ }
   }
 
   function scanDom() {
@@ -316,7 +446,8 @@
   function applyAll(v) {
     current = v;
 
-    for (const g of live(gainRefs)) {
+    const gains = live(gainRefs);
+    for (const g of gains) {
       try { g.gain.value = v; } catch (e) { /* node's context is gone */ }
     }
 
@@ -326,14 +457,17 @@
       try { boostGain.gain.value = v > 1 ? v : 1; } catch (e) { /* ignore */ }
     }
 
-    for (const el of live(mediaRefs)) applyToElement(el);
+    const medias = live(mediaRefs);
+    for (const el of medias) applyToElement(el);
 
     // Autoplay policy can suspend it again later, not only at creation.
     if (v > 1 && boostCtx && boostCtx.state === "suspended") {
       try { boostCtx.resume(); } catch (e) { /* ignore */ }
     }
 
-    announce();      // registries were just pruned; republish the real counts
+    // Both registries were just pruned; reuse those counts rather than walking
+    // them a second and third time inside announce().
+    announce({ ctx: gains.length, media: medias.length });
     manageTicker();
   }
 
@@ -350,11 +484,11 @@
           try {
             if (pageRouted.has(el)) continue;
             if (current <= 1) {
-              if (Math.abs(el.volume - current) > 0.01) el.volume = current;
+              setElementVolume(el, current);
             } else if (boosted.has(el)) {
               // Boost comes from the gain node; the element itself must stay at 1
               // or the engine's own changes multiply into it.
-              if (Math.abs(el.volume - 1) > 0.01) el.volume = 1;
+              setElementVolume(el, 1);
             }
           } catch (e) { /* ignore */ }
         }
@@ -367,13 +501,21 @@
 
   /* ---------- listen for changes from the content script ---------- */
 
+  let applied = false;
+
   function readAttr() {
     const r = root();
     if (!r) return;
     const raw = r.getAttribute(ATTR_GAIN);
     if (raw === null) return;
     const v = parseFloat(raw);
-    if (!isNaN(v) && v >= 0 && v <= 6) applyAll(v);
+    if (isNaN(v) || v < 0 || v > 6) return;
+    // The content script rewrites this attribute on every message, including ones
+    // carrying the level we already hold. Re-running the whole pass for those
+    // costs a walk of both registries and five attribute writes, for nothing.
+    if (applied && v === current) return;
+    applied = true;
+    applyAll(v);
   }
 
   function start() {

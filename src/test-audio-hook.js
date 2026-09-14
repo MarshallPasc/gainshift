@@ -120,9 +120,10 @@ function makeEnv(opts) {
   const domMedia = [];
   const attrs = {};
 
+  const attrWrites = { n: 0 };
   const documentElement = {
     getAttribute: (k) => (k in attrs ? attrs[k] : null),
-    setAttribute: (k, v) => { attrs[k] = String(v); },
+    setAttribute: (k, v) => { attrWrites.n++; attrs[k] = String(v); },
   };
 
   const listeners = {};
@@ -172,13 +173,14 @@ function makeEnv(opts) {
     setTimeout, clearTimeout,
     setInterval: fakeSetInterval, clearInterval: fakeClearInterval,
     console, Object, Math, parseFloat, isNaN, String, Number, Set, WeakSet, Array,
+    WeakMap, Reflect, TypeError,
   };
   ctxObj.globalThis = ctxObj;
   vm.createContext(ctxObj);
   vm.runInContext(SRC, ctxObj);
 
   return {
-    env: ctxObj, window, document, attrs, domMedia, created, observers,
+    env: ctxObj, window, document, attrs, domMedia, created, observers, attrWrites,
     HTMLMediaElement, Audio,
     // Set the volume the way the content script does, then fire the observer.
     setVolume(v) {
@@ -372,30 +374,36 @@ console.log("\n12. A failed routing attempt must not mark the element");
   check("element still controlled after the failed attempt", el.volume, 0.5);
 }
 
-console.log("\n13. Ticker re-asserts a level the page overwrote");
+console.log("\n13. The ticker re-asserts our factor over whatever the page set");
 {
   const t = makeEnv();
   const el = new t.HTMLMediaElement();
   el.play();
   t.setVolume(0.3);
-  check("applied", el.volume, 0.3);
+  check("applied", el.volume, 0.3);       // page was at 1, so 1 x 0.3
 
   el.volume = 0.95;                       // the site's own player resets it
   t.tick();
-  check("re-asserted by the ticker", el.volume, 0.3);
+  // 0.285, not 0.3: the page now wants 95%, and we want 30% OF the page. Our
+  // factor still wins, it is just applied to the page's number rather than
+  // replacing it.
+  check("our factor re-applied over the page's new level", el.volume, 0.285);
 }
 
-console.log("\n14. While boosting, the element stays pinned at 1");
+console.log("\n14. While boosting, the element holds the page's own level");
 {
   const t = makeEnv();
   const el = new t.HTMLMediaElement();
   el.play();
   t.setVolume(3);
-  check("pinned", el.volume, 1);
+  check("held at the page's level, which is 1 here", el.volume, 1);
 
   el.volume = 0.4;                        // engine lowers it mid-playback
   t.tick();
-  check("re-pinned so boost isn't multiplied down", el.volume, 1);
+  // The amplification lives in the gain node, so the element carries the page's
+  // number and the two multiply: 0.4 x 3. Forcing 1 back here would have thrown
+  // the engine's own mix away and made the tab three times FULL volume.
+  check("the engine's own level is respected, not overwritten", el.volume, 0.4);
 }
 
 console.log("\n15. Ticker stops when back at 100%");
@@ -483,10 +491,10 @@ console.log("\n19. volumechange corrects instantly - attached AND detached");
   check("detached applied", detached.volume, 0.3);
 
   inDoc.volume = 0.9;                        // the site's player resets it
-  check("attached corrected on the event", inDoc.volume, 0.3);
+  check("attached: our factor re-applied over the page level", inDoc.volume, 0.27);
 
   detached.volume = 0.9;                     // a pooled Howler object resets itself
-  check("detached corrected too (no document listener would see this)", detached.volume, 0.3);
+  check("detached too (no document listener would see this)", detached.volume, 0.27);
 }
 
 console.log("\n20. At 100% we never fight the page for control");
@@ -614,6 +622,265 @@ console.log("\n26. Two independent names both still get covered");
   t.setVolume(0.4);
   check("legacy-created context follows", viaLegacy.destination.gain.value, 0.4);
   check("modern-created context follows", viaModern.destination.gain.value, 0.4);
+}
+
+
+console.log("\n19. A page that routes an element keeps its own element volume");
+{
+  // The failure this pins: applyToElement wrote el.volume = 1 for any element the
+  // page had routed into its own graph. A page that routes AND sets a level for
+  // its own mix had that level overwritten - audible, and it happened even at
+  // 100%, where this extension is supposed to do nothing at all.
+  const t = makeEnv();
+  const ctx = new t.window.AudioContext();
+  const el = new t.Audio();
+  el.play();                                   // tracked
+  el.volume = 0.5;                             // the page's own mix level
+  ctx.createMediaElementSource(el);            // ...and the page routes it
+
+  t.setVolume(1);
+  check("at 100% the page's level survives", el.volume, 0.5);
+  t.setVolume(0.5);
+  check("at 50% it is still the page's to set", el.volume, 0.5);
+  t.tick();
+  check("the safety-net ticker leaves it alone too", el.volume, 0.5);
+}
+
+console.log("\n20. Routing hands our own scaling back, but not the page's");
+{
+  const t = makeEnv();
+  const ctx = new t.window.AudioContext();
+
+  // (a) we scaled it, then the page took it over: our value is undone.
+  const a = new t.Audio();
+  a.play();
+  t.setVolume(0.25);
+  check("scaled by us first", a.volume, 0.25);
+  ctx.createMediaElementSource(a);
+  check("original handed back on routing", a.volume, 1);
+
+  // (b) a level the page set while we were idle is genuinely the page's.
+  // (Below 100% this cannot arise: onVolumeChange reverts the page at once, which
+  // is the enforcement working as intended. At 100% we deliberately do not.)
+  const b = new t.Audio();
+  b.play();
+  t.setVolume(1);                              // inert
+  b.volume = 0.8;                              // the page's own choice
+  ctx.createMediaElementSource(b);
+  check("a level set while we were idle is left alone", b.volume, 0.8);
+}
+
+console.log("\n21. Patched constructors keep their identity");
+{
+  const t = makeEnv();
+  checkEq("Audio.name is not the wrapper's", t.window.Audio.name, "Audio");
+  checkEq("AudioContext.name preserved", t.window.AudioContext.name, "AudioContext");
+
+  // new.target has to survive, or a subclass gets the base prototype.
+  class Sound extends t.window.Audio {}
+  const s = new Sound();
+  checkEq("subclass instance is its own class", s instanceof Sound, true);
+  checkEq("...and still an Audio", s instanceof t.window.Audio, true);
+  checkEq("subclassed element still tracked", t.mediaCount(), 1);
+}
+
+console.log("\n22. Unchanged status attributes are not rewritten");
+{
+  // Five attributes were rewritten on every pass whether or not anything had
+  // changed. Each one is a DOM mutation that wakes any MutationObserver the page
+  // keeps on <html>, and frameworks commonly have one.
+  const t = makeEnv();
+  new t.window.AudioContext();
+  t.setVolume(0.4);
+  const before = t.attrWrites.n;
+
+  t.setVolume(0.4);                             // same value again
+  checkEq("a repeat of the same level writes nothing", t.attrWrites.n - before, 0);
+
+  t.setVolume(0.6);                             // a real change
+  check("a real change still lands", Number(t.attrs["data-gainshift-gain"]), 0.6);
+  checkEq("and writes only what changed", t.attrWrites.n - before, 0);
+}
+
+console.log("\n23. A repeated level does not re-run the whole pass");
+{
+  // Element volume is the wrong probe here: onVolumeChange restores it whether or
+  // not applyAll ran, so it cannot tell the guard from the listener. The master
+  // gain can - nothing but a full pass rewrites it.
+  const t = makeEnv();
+  const ctx = new t.window.AudioContext();
+  t.setVolume(0.35);
+  ctx.destination.gain.value = 0.99;            // a marker no page code would set
+  t.setVolume(0.35);                            // content script re-states the level
+  check("the redundant pass did not re-run", ctx.destination.gain.value, 0.99);
+  t.setVolume(0.36);                            // a genuine change
+  check("a real change still runs the pass", ctx.destination.gain.value, 0.36);
+}
+
+console.log("\n27. At 100% a player's own level is left exactly as the page set it");
+{
+  // The failure this pins: the first play() of an element Gainshift had never
+  // written to forced its volume to 1, even at 100%. Any player that restores a
+  // saved level before playing - a video site remembering you like it at 30% -
+  // played at full volume with the extension installed but never touched.
+  const t = makeEnv();
+  const el = new t.HTMLMediaElement();
+  el.volume = 0.3;
+  el.play();
+  check("first play at 100% keeps the page's level", el.volume, 0.3);
+
+  t.setVolume(1);                               // content.js states 100% at startup
+  check("the startup 100% keeps it too", el.volume, 0.3);
+
+  const inPage = new t.HTMLMediaElement();
+  inPage.inDocument = true;
+  inPage.volume = 0.6;
+  t.domMedia.push(inPage);
+  (t.listeners["DOMContentLoaded"] || []).forEach((f) => f());
+  check("an element found by the DOM scan keeps its level", inPage.volume, 0.6);
+
+  // Moving off 100% still takes the element over, exactly as before.
+  t.setVolume(0.5);
+  // 0.3 x 0.5 and 0.6 x 0.5: the factor multiplies what each player had.
+  check("50% applies on top of the page 30%", el.volume, 0.15);
+  check("and on top of the other player 60%", inPage.volume, 0.3);
+}
+
+
+console.log("\n28. Coming back to 100% gives the page its own level back, not 1");
+{
+  // Section 27 fixed the untouched case. This is the other half: once the user
+  // HAS moved the slider, returning it to 100% used to pin the element at full
+  // volume, so the same slider position behaved differently depending on
+  // history. 100% now means the same thing either way - the extension is out of
+  // the way - which is what onVolumeChange has always said.
+  const t = makeEnv();
+  const el = new t.HTMLMediaElement();
+  el.volume = 0.3;                            // the site's own player level
+  el.play();
+
+  t.setVolume(0.5);
+  check("50% of the page 30%", el.volume, 0.15);
+
+  t.setVolume(1);
+  check("back at 100%, the page's 30% is handed back", el.volume, 0.3);
+  t.tick();
+  check("and the ticker does not take it again", el.volume, 0.3);
+
+  // The same, after a boost - where the element is pinned at 1 while amplified.
+  t.setVolume(2);
+  check("boost holds the page 30% and amplifies in the gain node", el.volume, 0.3);
+  t.setVolume(1);
+  check("coming down from boost also restores the page's level", el.volume, 0.3);
+}
+
+console.log("\n29. The original is what the page had, never a value of ours");
+{
+  // The failure this pins is subtle and cost a debugging session: assigning
+  // el.volume fires volumechange SYNCHRONOUSLY, which re-enters
+  // setElementVolume. With ownership recorded after the write, that re-entrant
+  // call saw an unowned element and filed our own brand-new value as "what the
+  // page had". Every later release then handed back our value instead of the
+  // page's, which looks like nothing at all until you go back to 100%.
+  const t = makeEnv();
+  const el = new t.HTMLMediaElement();
+  el.volume = 0.3;
+  el.play();
+
+  t.setVolume(0.5);
+  t.setVolume(0.25);                          // a second takeover, still ours
+  t.setVolume(0.8);
+  check("still holding our factor over the page 30%", el.volume, 0.24);
+
+  t.setVolume(1);
+  check("and the page's original survived all of it", el.volume, 0.3);
+}
+
+
+console.log("\n30. The level multiplies the page's own, it does not replace it");
+{
+  // Reported from real use: a video already turned down to 20% in the SITE's own
+  // player, then Gainshift set to 50% - and it got LOUDER, because the factor
+  // was written straight into el.volume. 50% has always been documented as an
+  // exact multiplication, and on the Web Audio path it always was one; the
+  // media-element path was the odd one out.
+  const t = makeEnv();
+  const el = new t.HTMLMediaElement();
+  el.volume = 0.2;                          // the viewer turned the player down
+  el.play();
+
+  t.setVolume(0.5);
+  check("half of the page's 20%, not 50% of full", el.volume, 0.1);
+
+  t.setVolume(0.25);
+  check("a quarter of it", el.volume, 0.05);
+
+  t.setVolume(1);
+  check("and 100% hands the 20% straight back", el.volume, 0.2);
+}
+
+console.log("\n31. The site's own volume control keeps working while we hold it");
+{
+  // The other half of the same bug: with Gainshift engaged, every move of the
+  // site's own slider used to be stamped straight back to our number, so the
+  // page's control looked broken. The page's value is now taken as the new base.
+  const t = makeEnv();
+  const el = new t.HTMLMediaElement();
+  el.play();
+  t.setVolume(0.5);
+  check("page at 100%, we hold half", el.volume, 0.5);
+
+  el.volume = 0.4;                          // the viewer drags the SITE's slider
+  check("the site's move is kept, with our half on top", el.volume, 0.2);
+
+  el.volume = 0.8;                          // and again, upwards
+  check("and again", el.volume, 0.4);
+
+  t.setVolume(1);
+  check("100% gives back the level the site last asked for", el.volume, 0.8);
+}
+
+console.log("\n32. Boost multiplies the page's level too");
+{
+  const t = makeEnv();
+  const ctx = new t.window.AudioContext();
+  const el = new t.HTMLMediaElement();
+  el.volume = 0.5;                          // the page's own half
+  el.play();
+
+  t.setVolume(2);
+  // The element carries the page's 0.5 and our gain node carries the 2, so the
+  // signal reaching the speakers is 0.5 x 2. Writing 1 into the element instead
+  // would make it 1 x 2 - the page's mix discarded and the tab twice as loud as
+  // the viewer asked for.
+  check("element holds the page's level", el.volume, 0.5);
+  const boostGain = t.created.sources.length
+    ? t.created.sources[t.created.sources.length - 1].outputs[0]
+    : null;
+  check("and the gain node carries the factor", boostGain ? boostGain.gain.value : 0, 2);
+}
+
+
+console.log("\n33. A level the page sets while we are at 100% becomes the new base");
+{
+  // At 100% the element is handed back to the page - ownership released, not
+  // merely held at the page's number. The difference only shows up later: if we
+  // kept ownership, the value the page set while we were away would never be
+  // re-read, and the next time the user moved the slider we would multiply
+  // against a stale base.
+  const t = makeEnv();
+  const el = new t.HTMLMediaElement();
+  el.volume = 0.8;
+  el.play();
+  t.setVolume(0.5);
+  check("half of 0.8", el.volume, 0.4);
+
+  t.setVolume(1);
+  check("100% hands it back", el.volume, 0.8);
+
+  el.volume = 0.4;                      // the viewer halves it in the site's UI
+  t.setVolume(0.5);
+  check("now half of 0.4, not half of the old 0.8", el.volume, 0.2);
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

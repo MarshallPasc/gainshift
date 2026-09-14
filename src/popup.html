@@ -91,14 +91,34 @@
 
   input[type="range"] { width: 100%; margin: 4px 0 2px; accent-color: var(--accent); }
 
+  /* Each label sits where its value actually is on a linear 0-600 track, which
+     is NOT evenly spaced: 100 belongs one sixth of the way along, not a third.
+     Spread evenly (the old `justify-content: space-between`), the "100" sat
+     directly under the thumb at 179%, which reads as a broken slider.
+
+     The inset is the thumb's own width: a range thumb's centre travels from
+     half a thumb in to half a thumb short of the far end, so the usable span
+     is (track - thumb), not the whole track. 18px is Firefox's thumb, measured
+     off a screenshot of the running add-on rather than guessed. */
   .scale {
-    display: flex;
-    justify-content: space-between;
+    --thumb: 18px;
+    position: relative;
+    height: 13px;
     color: var(--muted);
     font-size: 10px;
     font-variant-numeric: tabular-nums;
     margin-bottom: 12px;
   }
+  .scale span {
+    position: absolute;
+    white-space: nowrap;
+    transform: translateX(-50%);
+    left: calc(var(--thumb) / 2 + var(--at) * (100% - var(--thumb)));
+  }
+  .scale .s0   { --at: 0; }
+  .scale .s100 { --at: 0.16667; }
+  .scale .s300 { --at: 0.5; }
+  .scale .s600 { --at: 1; }
 
   .presets { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin-bottom: 12px; }
   button {
@@ -115,22 +135,42 @@
     margin: -6px 0 10px;
   }
 
+  /* Two lines on purpose. On one line a long hostname squeezed out either the
+     site's level or the end of the host itself; the controls are a fixed width,
+     so giving the text a line of its own is the only layout that always fits. */
   .site {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px 8px;
     font-size: 11px;
     color: var(--muted);
     margin-bottom: 10px;
     min-height: 18px;
   }
+  /* The hostname is the only part allowed to shorten. "youtube.com keeps 45%"
+     on a narrow row must lose letters of the host, never the 45%. */
   .site .name {
+    order: 3;              /* below the controls, whatever the DOM order */
+    flex: 1 0 100%;
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .site .forget { order: 2; }
+  .site .name b {
+    color: var(--fg);
+    font-weight: 600;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .site .name b { color: var(--fg); font-weight: 600; }
+  .site .name .lead,
+  .site .name .lvl { flex: none; white-space: nowrap; }
   .site .forget {
     flex: none;
     font-size: 10px;
@@ -139,6 +179,27 @@
     color: var(--muted);
   }
   .site .forget:hover { border-color: var(--warn); color: var(--warn); }
+
+  /* Does this level belong to the tab or to the site? Two states, both always
+     visible, so the answer is readable without clicking anything. */
+  .site .scope {
+    flex: none;
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    overflow: hidden;
+  }
+  .site .scope button {
+    border: 0;
+    border-radius: 0;
+    font-size: 10px;
+    padding: 2px 7px;
+    color: var(--muted);
+    background: transparent;
+  }
+  .site .scope button + button { border-left: 1px solid var(--line); }
+  .site .scope button:hover:not(.on) { color: var(--accent); }
+  .site .scope button.on { background: var(--accent); color: #fff; }
 
   .status {
     border-top: 1px solid var(--line);
@@ -195,7 +256,7 @@
 
   <input type="range" id="slider" min="0" max="600" step="1" value="100">
   <div class="scale">
-    <span>0</span><span>100</span><span>300</span><span>600%</span>
+    <span class="s0">0</span><span class="s100">100</span><span class="s300">300</span><span class="s600">600%</span>
   </div>
 
   <div class="presets">
